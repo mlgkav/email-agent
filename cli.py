@@ -1,4 +1,4 @@
-"""Email CLI tool for reading and managing emails using IMAP protocol."""
+"""Email CLI tool for querying emails using RAG."""
 
 import click
 import os

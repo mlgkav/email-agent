@@ -11,17 +11,6 @@ load_dotenv()
 
 
 def get_env_var(name):
-    """Get environment variable value or raise error if not set.
-
-    Args:
-        name: Name of the environment variable to get.
-
-    Returns:
-        str: Value of the environment variable.
-
-    Raises:
-        ValueError: If the environment variable is not set.
-    """
     value = os.environ.get(name)
     if not value:
         raise ValueError(f"Missing required environment variable: {name}")
@@ -29,15 +18,6 @@ def get_env_var(name):
 
 
 def fetch_emails(unread=False, limit=10):
-    """Fetch emails from the inbox based on filters.
-
-    Args:
-        unread: If True, fetch only unread emails.
-        limit: Maximum number of emails to fetch.
-
-    Returns:
-        list: List of email objects.
-    """
     host = get_env_var("IMAP_HOST")
     user = get_env_var("IMAP_USER")
     password = get_env_var("IMAP_PASSWORD")
@@ -49,11 +29,6 @@ def fetch_emails(unread=False, limit=10):
 
 
 def display_emails(emails):
-    """Display emails in a formatted table.
-
-    Args:
-        emails: List of email objects to display.
-    """
     if not emails:
         click.echo("No emails found.")
     else:

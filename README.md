@@ -1,5 +1,7 @@
 # Email CLI Tool
 
+A command-line interface for reading emails using IMAP.
+
 ## Setup
 
 1. Create a virtual environment:
@@ -21,6 +23,23 @@
    ```bash
    pip install -r requirements.txt
    ```
+
+4. Set up pre-commit hooks:
+   ```bash
+   pre-commit install
+   ```
+
+## Code Quality
+
+This project uses pre-commit hooks to maintain code quality:
+
+- **black**: Auto-formats Python code
+- **flake8**: Lints for syntax and logic issues
+
+To manually run the checks:
+```bash
+pre-commit run --all-files
+```
 
 ## Configuration
 
@@ -49,3 +68,6 @@ python3 cli.py list --unread
 
 # List specific number of emails
 python3 cli.py list --limit 5
+
+# Combine options
+python3 cli.py list --unread --limit 5

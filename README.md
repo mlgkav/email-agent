@@ -48,6 +48,9 @@ pre-commit run --all-files
    IMAP_HOST=imap.gmail.com
    IMAP_USER=your_email@gmail.com
    IMAP_PASSWORD=your_app_password
+
+   # OpenAI Configuration
+   OPENAI_API_KEY=your_openai_api_key   
    ```
 
 2. For Gmail users, you'll need an App Password:
@@ -55,6 +58,19 @@ pre-commit run --all-files
    - Enable 2-Step Verification if not already done
    - Go to Security → App passwords
    - Generate a new app password and use it as `IMAP_PASSWORD`
+
+3. To get your OpenAI API key:
+   - Visit https://platform.openai.com/
+   - Sign up or log in to your OpenAI account
+   - Go to API Keys section (https://platform.openai.com/api-keys)
+   - Click "Create new secret key"
+   - Copy the key immediately (it won't be shown again)
+   - Add it to your `.env` file as `OPENAI_API_KEY`
+
+Note: The OpenAI API is a paid service. You'll need to:
+   - Add billing information at https://platform.openai.com/account/billing
+   - Monitor usage at https://platform.openai.com/usage
+   - Free trial credits are available but expire after 3 months
 
 ## Usage
 
@@ -71,3 +87,19 @@ python3 cli.py list --limit 5
 
 # Combine options
 python3 cli.py list --unread --limit 5
+
+# Summarize Emails
+Summarize emails using GPT-3.5:
+```bash
+# Summarize last 5 emails (default)
+python3 cli.py summarize
+
+# Summarize only unread emails
+python3 cli.py summarize --unread
+
+# Summarize specific number of emails
+python3 cli.py summarize --limit 3     # summarize last 3 emails
+
+# Combine options (summarize specific number of unread emails)
+python3 cli.py summarize --unread --limit 3    # summarize last 3 unread emails
+```

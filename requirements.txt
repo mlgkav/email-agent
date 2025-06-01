@@ -3,3 +3,4 @@ imap-tools
 python-dotenv
 prettytable
 pre-commit
+openai

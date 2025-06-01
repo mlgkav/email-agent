@@ -1,15 +1,26 @@
 """Email CLI tool for querying emails using RAG."""
 
 import click
-import os
-from imap_tools import MailBox
+import json, os, tempfile, click, logging
+from imap_tools import MailBox, MailMessage
 from dotenv import load_dotenv
 from prettytable import PrettyTable
+from datetime import datetime
 from openai import OpenAI
+import json, rich
+from vector_db import EmailVectorDB
+
+
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+logging.basicConfig(
+    level=LOG_LEVEL,
+    format="%(asctime)s [%(levelname)5s] %(name)s: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+log = logging.getLogger(__name__)
 
 # Load environment variables from .env file
 load_dotenv()
-
 
 def get_env_var(name):
     value = os.environ.get(name)
@@ -17,8 +28,9 @@ def get_env_var(name):
         raise ValueError(f"Missing required environment variable: {name}")
     return value
 
+client = OpenAI(api_key=get_env_var("OPENAI_API_KEY"))
 
-def fetch_emails(unread=False, limit=10, include_body=False):
+def fetch_emails(unread=False, limit=10, include_body=False) -> [MailMessage]:
     host = get_env_var("IMAP_HOST")
     user = get_env_var("IMAP_USER")
     password = get_env_var("IMAP_PASSWORD")
@@ -63,8 +75,6 @@ def display_emails(emails):
 def summarize_with_gpt(emails_with_content):
     """Summarize emails using GPT."""
     try:
-        client = OpenAI(api_key=get_env_var("OPENAI_API_KEY"))
-
         # Prepare email content for summarization
         email_texts = []
         for email, content in emails_with_content:
@@ -111,13 +121,59 @@ def hello():
 @cli.command(name="list")
 @click.option("--unread", is_flag=True, help="List only unread emails")
 @click.option(
-    "--limit", default=10, show_default=True, help="Limit the number of emails to list"
+    "--limit", default=50, show_default=True, help="Limit the number of emails to list"
 )
 def list_emails(unread, limit):
     """List emails from the inbox with options for unread and limit."""
     try:
         emails = fetch_emails(unread=unread, limit=limit)
+
         display_emails(emails)
+
+    except ValueError as e:
+        click.echo(click.style(f"Config Error: {e}", fg="red"))
+    except Exception as e:
+        click.echo(click.style(f"An error occurred: {e}", fg="red"))
+
+
+@cli.command(name="query")
+@click.option("--unread", is_flag=False, help="Summarize only unread emails")
+@click.option(
+    "--limit",
+    default=50,
+    show_default=True,
+    help="Limit the number of emails to summarize",
+)
+def query(unread, limit):
+    """Query emails using GPT."""
+    try:
+        click.echo("Fetching emails...")
+        emails_with_content = fetch_emails(
+            unread=unread, limit=limit, include_body=False
+        )
+        print(emails_with_content)
+
+        if not emails_with_content:
+            click.echo("No emails found to summarize.")
+            return
+
+        click.echo("Got emails, querying...")
+        vector_db = EmailVectorDB()
+
+        vector_db.addEmails(emails_with_content)
+
+        resp = client.responses.create(
+            model="o3-mini",
+            input="I am a hungry student. Give me emails related to promotions that will give me discounts on food. Return these emails in a table and cite the emails you reference.",
+            tools=[{"type": "file_search",
+                    "vector_store_ids": [vector_db.getDatabase()]}]
+        )
+
+        resp_json = json.loads(resp.model_dump_json())
+        rich.print_json(data=resp_json)        # terminal
+
+        vector_db.deleteDatabase()
+
     except ValueError as e:
         click.echo(click.style(f"Config Error: {e}", fg="red"))
     except Exception as e:

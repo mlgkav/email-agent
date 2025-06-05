@@ -1,93 +1,62 @@
 """Email CLI tool for querying emails using RAG."""
-
+from typing import List
 import click
-import json, os, tempfile, click, logging
-from imap_tools import MailBox, MailMessage
-from dotenv import load_dotenv
-from prettytable import PrettyTable
+import json, click, logging
 from datetime import datetime
-from openai import OpenAI
-import json, rich
-from vector_db import EmailVectorDB
+from imap_tools import MailBox, MailMessage
+from prettytable import PrettyTable
+import rich
+from config import get_env_var, OPENAI_CLIENT, STORE_NAME
+from vector_db import EmailVectorStoreManager, OpenAIVectorBackend
 
-
-LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
-logging.basicConfig(
-    level=LOG_LEVEL,
-    format="%(asctime)s [%(levelname)5s] %(name)s: %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
 log = logging.getLogger(__name__)
 
-# Load environment variables from .env file
-load_dotenv()
-
-def get_env_var(name):
-    value = os.environ.get(name)
-    if not value:
-        raise ValueError(f"Missing required environment variable: {name}")
-    return value
-
-client = OpenAI(api_key=get_env_var("OPENAI_API_KEY"))
-
-def fetch_emails(unread=False, limit=10, include_body=False) -> [MailMessage]:
+def fetch_emails(unread: bool = False, limit: int = 50) -> List[MailMessage]:
+    """Pull *limit* messages from the inbox and return them as ``MailMessage`` objects."""
     host = get_env_var("IMAP_HOST")
     user = get_env_var("IMAP_USER")
     password = get_env_var("IMAP_PASSWORD")
 
     criteria = "UNSEEN" if unread else "ALL"
-
     with MailBox(host).login(user, password) as mailbox:
-        emails = list(mailbox.fetch(criteria, limit=limit, reverse=True))
-        if include_body:
-            return [(email, email.text or email.html) for email in emails]
-        return emails
+        return list(mailbox.fetch(criteria, limit=limit, reverse=True))
 
-
-def display_emails(emails):
-    if not emails:
+def display_emails(msgs: List[MailMessage]):
+    if not msgs:
         click.echo("No emails found.")
-    else:
-        # Create table
-        table = PrettyTable()
-        table.field_names = ["Date", "From", "Subject", "Size"]
-        table.align["Date"] = "l"
-        table.align["Subject"] = "l"  # Left align subject
-        table.align["From"] = "l"  # Left align from
-        table.align["Size"] = "l"  # Right align size
+        return
 
-        for email in emails:
-            # Format date
-            date = email.date.strftime("%Y-%m-%d %H:%M")
-            # Format size (convert bytes to KB)
-            size = f"{email.size / 1024:.1f} KB"
-            # Truncate subject if too long
-            subject = (
-                email.subject[:50] + "..." if len(email.subject) > 50 else email.subject
-            )
+    tbl = PrettyTable()
+    tbl.field_names = ["Date", "From", "Subject", "Size"]
+    for k in tbl.field_names:
+        tbl.align[k] = "l"
 
-            table.add_row([date, email.from_, subject, size])
+    for msg in msgs:
+        date = msg.date.strftime("%Y-%m-%d %H:%M") if isinstance(msg.date, datetime) else "?"
+        size = f"{msg.size / 1024:.1f} KB"
+        subject = (msg.subject or "(no subject)")
+        if len(subject) > 50:
+            subject = subject[:47] + "…"
+        tbl.add_row([date, msg.from_, subject, size])
 
-        # Print table
-        click.echo(table)
-
+    click.echo(tbl)
 
 def summarize_with_gpt(emails_with_content):
     """Summarize emails using GPT."""
     try:
         # Prepare email content for summarization
         email_texts = []
-        for email, content in emails_with_content:
+        for email in emails_with_content:
             email_texts.append(
                 f"Date: {email.date}\n"
                 f"From: {email.from_}\n"
                 f"Subject: {email.subject}\n"
-                f"Content: {content[:1000]}..."  # Truncate content to avoid token limits
+                f"Content: {email.txt or email.html or ''}"
             )
 
         combined_emails = "\n\n---\n\n".join(email_texts)
 
-        response = client.chat.completions.create(
+        response = OPENAI_CLIENT.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=[
                 {
@@ -127,58 +96,101 @@ def list_emails(unread, limit):
     """List emails from the inbox with options for unread and limit."""
     try:
         emails = fetch_emails(unread=unread, limit=limit)
-
         display_emails(emails)
 
-    except ValueError as e:
-        click.echo(click.style(f"Config Error: {e}", fg="red"))
-    except Exception as e:
-        click.echo(click.style(f"An error occurred: {e}", fg="red"))
+    except Exception as exc:
+        raise click.ClickException(str(exc)) from exc
 
+@cli.command("ingest")
+@click.option("--unread", is_flag=True, help="Ingest only unread messages")
+@click.option("--limit", default=50, show_default=True, help="Maximum messages to ingest")
+def ingest_emails(unread: bool, limit: int):
+    """Fetch e‑mails and upload them into the vector store (deduplicated)."""
+    click.echo(f"✉️  Fetching up to {limit} message(s) from IMAP …")
+    msgs = fetch_emails(unread=unread, limit=limit)
+    if not msgs:
+        click.echo("Nothing to ingest – inbox empty.")
+        return
 
-@cli.command(name="query")
-@click.option("--unread", is_flag=False, help="Summarize only unread emails")
-@click.option(
-    "--limit",
-    default=50,
-    show_default=True,
-    help="Limit the number of emails to summarize",
-)
-def query(unread, limit):
-    """Query emails using GPT."""
+    manager = EmailVectorStoreManager(store_name=STORE_NAME)
+
+    added = 0
+    for msg in msgs:
+        metadata = {
+            "from": msg.from_,
+            "subject": msg.subject,
+            "date": msg.date.isoformat() if isinstance(msg.date, datetime) else "",
+        }
+        manager.add_message(msg, metadata=metadata)
+        added += 1
+
+    click.echo(
+        click.style(
+            f"✅  Ingestion complete – {added} message(s) stored in vector store “{STORE_NAME}” (ID={manager.get_vector_store_id()}).",
+            fg="green",
+        )
+    )
+
+@cli.command("query")
+@click.argument("prompt", nargs=-1)
+def query_emails(prompt: tuple[str, ...]):
+    """Ask questions about the *already‑ingested* email corpus.
+
+    Example::
+
+        email‑cli query "show marketing emails with lunch coupons from the past month"
+    """
+    if not prompt:
+        raise click.ClickException("Please provide a query prompt.")
+    user_prompt = " ".join(prompt)
+    print(user_prompt)
+
+    manager = EmailVectorStoreManager(store_name=STORE_NAME)
+    vs_id = manager.get_vector_store_id()
+
+    click.echo("🤖  Running RAG query against vector store …")
     try:
-        click.echo("Fetching emails...")
-        emails_with_content = fetch_emails(
-            unread=unread, limit=limit, include_body=False
-        )
-        print(emails_with_content)
-
-        if not emails_with_content:
-            click.echo("No emails found to summarize.")
-            return
-
-        click.echo("Got emails, querying...")
-        vector_db = EmailVectorDB()
-
-        vector_db.addEmails(emails_with_content)
-
-        resp = client.responses.create(
+        response = OPENAI_CLIENT.responses.create(
             model="o3-mini",
-            input="I am a hungry student. Give me emails related to promotions that will give me discounts on food. Return these emails in a table and cite the emails you reference.",
-            tools=[{"type": "file_search",
-                    "vector_store_ids": [vector_db.getDatabase()]}]
+            input=f"{user_prompt}. Return these emails in a table and cite the emails you reference.",
+            tools=[{"type": "file_search", "vector_store_ids": [vs_id]}],
         )
+        rich.print_json(data=json.loads(response.model_dump_json()))
+    except Exception as exc:
+        raise click.ClickException(f"Query failed: {exc}") from exc
 
-        resp_json = json.loads(resp.model_dump_json())
-        rich.print_json(data=resp_json)        # terminal
 
-        vector_db.deleteDatabase()
+@cli.command("store-list")
+def list_store():
+    """Display all files currently stored in the selected vector store."""
+    manager = EmailVectorStoreManager(store_name=STORE_NAME)
+    backend = manager.backend
 
-    except ValueError as e:
-        click.echo(click.style(f"Config Error: {e}", fg="red"))
-    except Exception as e:
-        click.echo(click.style(f"An error occurred: {e}", fg="red"))
+    if not isinstance(backend, OpenAIVectorBackend):
+        raise click.ClickException("Listing is only supported for the OpenAI backend.")
 
+    vs_id = manager.get_vector_store_id()
+    files = backend.client.vector_stores.files.list(vector_store_id=vs_id, limit=100).data
+
+    if not files:
+        click.echo("Vector store is empty.")
+        return
+
+    tbl = PrettyTable()
+    tbl.field_names = ["File ID", "From", "Subject", "Date"]
+    for k in tbl.field_names:
+        tbl.align[k] = "l"
+
+    for f in files:
+        meta = getattr(f, "metadata", {}) or {}
+        tbl.add_row([
+            f.id,
+            meta.get("from", ""),
+            meta.get("subject", ""),
+            meta.get("date", ""),
+        ])
+
+    click.echo(tbl)
 
 @cli.command()
 @click.option("--unread", is_flag=True, help="Summarize only unread emails")
@@ -192,16 +204,14 @@ def summarize(unread, limit):
     """Summarize emails using GPT."""
     try:
         click.echo("Fetching emails...")
-        emails_with_content = fetch_emails(
-            unread=unread, limit=limit, include_body=True
-        )
+        emails = fetch_emails(unread=unread, limit=limit)
 
-        if not emails_with_content:
+        if not emails:
             click.echo("No emails found to summarize.")
             return
 
         click.echo("Generating summary...")
-        summary = summarize_with_gpt(emails_with_content)
+        summary = summarize_with_gpt(emails)
 
         click.echo("\nEmail Summary:")
         click.echo("-------------")
